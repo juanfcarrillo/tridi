@@ -11,86 +11,67 @@ const r2Client = new S3Client({
   },
 });
 
-export async function GET(req: NextRequest) {
+export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(req.url);
-    const filePath = searchParams.get("path");
-
+    const { searchParams } = new URL(request.url);
+    const filePath = searchParams.get("path")?.replace(/^\/+/, "");
     if (!filePath) {
-      return NextResponse.json(
-        { error: "File path is required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "File path is required" }, { status: 400 });
     }
-
-    // Remove leading slash if present
-    const cleanPath = filePath.startsWith("/") ? filePath.slice(1) : filePath;
-
-    console.log(`Fetching file from R2: ${cleanPath}`);
-
+    // Get the file from R2
     const command = new GetObjectCommand({
-      Bucket: process.env.R2_BUCKET_NAME!,
-      Key: cleanPath,
+      Bucket: process.env.R2_BUCKET_NAME,
+      Key: filePath,
     });
-
     const response = await r2Client.send(command);
-
     if (!response.Body) {
-      return NextResponse.json(
-        { error: "File not found" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
-
     // Convert the stream to a buffer
     const chunks: Uint8Array[] = [];
     const reader = response.Body.transformToWebStream().getReader();
-
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       chunks.push(value);
     }
-
     const buffer = Buffer.concat(chunks);
-
     // Determine content type based on file extension
-    const extension = cleanPath.split('.').pop()?.toLowerCase();
+    const extension = filePath.split('.').pop()?.toLowerCase();
     let contentType = 'application/octet-stream';
-    
-    if (extension === 'glb' || extension === 'gltf') {
-      contentType = 'model/gltf-binary';
-    } else if (extension === 'obj') {
-      contentType = 'text/plain';
-    } else if (extension === 'mtl') {
-      contentType = 'text/plain';
+    switch (extension) {
+      case 'glb':
+        contentType = 'model/gltf-binary';
+        break;
+      case 'gltf':
+        contentType = 'model/gltf+json';
+        break;
+      case 'obj':
+      case 'mtl':
+        contentType = 'text/plain';
+        break;
+      case 'png':
+        contentType = 'image/png';
+        break;
+      case 'jpg':
+      case 'jpeg':
+        contentType = 'image/jpeg';
+        break;
     }
-
     return new NextResponse(buffer, {
+      status: 200,
       headers: {
         'Content-Type': contentType,
         'Content-Length': buffer.length.toString(),
-        'Cache-Control': 'public, max-age=31536000', // Cache for 1 year
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET',
-        'Access-Control-Allow-Headers': 'Content-Type',
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'Cross-Origin-Embedder-Policy': 'cross-origin',
+        'Cross-Origin-Opener-Policy': 'cross-origin',
       },
     });
-
-  } catch (error: unknown) {
+  } catch (error) {
     console.error("Error fetching file from R2:", error);
-    
-    if (error instanceof Error) {
-      if (error.name === 'NoSuchKey') {
-        return NextResponse.json(
-          { error: "File not found in R2 storage" },
-          { status: 404 }
-        );
-      }
-    }
-
     return NextResponse.json(
-      { error: "Failed to fetch file from R2 storage" },
+      { error: "Failed to fetch file from storage" },
       { status: 500 }
     );
   }
